@@ -619,6 +619,8 @@ procexpected(char expected)
 
 		case MSGBOMB: {
 			char msgbuf[2];
+			int hit;
+
 			fullread(sock, msgbuf, sizeof(msgbuf));
 
 			buf = tolower(msgbuf[0]);
@@ -632,6 +634,10 @@ procexpected(char expected)
 			col = buf - '0';
 
 			OCEAN(row, col) |= MARKRBOMBED;
+			hit = OCEAN(row, col) & MARKSHIP;
+
+			sendmessage(MSGSTAT, hit ? MSGSTATHIT : MSGSTATMISS,
+				    hit ? "Take that bitch" : "You will get it");
 
 			break;
 		}
@@ -757,7 +763,7 @@ sendready(void)
 void
 sendbomb(void)
 {
-	int ch;
+	int ch, nextch;
 
 	draw();
 	printf("Where would you like to send a bomb?\n");
@@ -766,13 +772,16 @@ sendbomb(void)
 		printf("Row: ");
 		fflush(stdout);
 		ch = tolower(getch());
-		if (ch != '\n')
-			getch(); /* newline */
 
-		if ('a' <= ch && ch <= ('a' + NROWS - 1))
+		if ('a' <= ch && ch <= ('a' + NROWS - 1)) {
+			while (getch() != '\n')
+				;
 			break;
-		else
-			printf("Invalid row\n");
+		}
+
+		printf("Invalid row\n");
+		while (getch() != '\n')
+			;
 	}
 	lastrow = ch - 'a';
 
@@ -780,15 +789,25 @@ sendbomb(void)
 		printf("Column: ");
 		fflush(stdout);
 		ch = getch();
-		if (ch != '\n')
-			getch();
 
-		if ('0' <= ch && ch <= ('0' + NCOLS - 1))
+		if ('0' <= ch && ch <= ('0' + NCOLS - 1)) {
+			if (ch == '1') {
+				nextch = getch();
+				if (nextch == '0')
+					ch++;
+				else
+					putchar(ch);
+			}
+			while (getch() != '\n')
+				;
 			break;
-		else
-			printf("Invalid column\n");
+		}
+
+		printf("Invalid column\n");
+		while (getch() != '\n')
+			;
 	}
-	lastcol = ch - '0';
+	lastcol = (ch - 1) - '0';
 
 	OCEAN(lastrow, lastcol) |= MARKBOMBED;
 
@@ -798,6 +817,7 @@ sendbomb(void)
 #endif
 
 	sendmessage(MSGBOMB);
+	procexpected(MSGSTAT);
 }
 
 void
