@@ -628,7 +628,7 @@ procexpected(char expected)
 			break;
 
 		case MSGBOMB: {
-			char msgbuf[2];
+			char msgbuf[3];
 			int hit;
 
 			fullread(sock, msgbuf, sizeof(msgbuf));
@@ -638,10 +638,11 @@ procexpected(char expected)
 				cleandiex(("Received bad message"));
 			row = buf - 'a';
 
-			buf = msgbuf[1];
-			if (!isdigit(buf))
+			if (!(isdigit(msgbuf[1]) || msgbuf[1] == ' ') ||
+			    !isdigit(msgbuf[2]))
 				cleandiex(("Received bad message"));
-			col = buf - '0';
+			col = (msgbuf[1] == ' ' ? 0 : (msgbuf[1] - '0') * 10) +
+			      msgbuf[2] - '0' - 1;
 
 			OCEAN(row, col) |= MARKRBOMBED;
 			hit = OCEAN(row, col) & MARKSHIP;
@@ -713,8 +714,8 @@ sendmessage(char type, ...)
 		row = va_arg(ap, int);
 		col = va_arg(ap, int);
 #endif
-		snprintf(buf, sizeof(buf), "%c%c%c", type,
-			 lastrow + 'A', lastcol + '0');
+		snprintf(buf, sizeof(buf), "%c%c%2d", type,
+			 lastrow + 'A', lastcol + 1);
 		break;
 
 	case MSGREADY:
@@ -808,13 +809,13 @@ sendbomb(void)
 		fflush(stdout);
 		ch = getch();
 
-		if ('0' <= ch && ch <= ('0' + NCOLS - 1)) {
+		if ('1' <= ch && ch <= '9') {
 			if (ch == '1') {
 				nextch = getch();
 				if (nextch == '0')
 					ch += 9;
 				else
-					ungetchar(ch);
+					ungetchar(nextch);
 			}
 			while (getch() != '\n')
 				;
@@ -825,7 +826,7 @@ sendbomb(void)
 		while (getch() != '\n')
 			;
 	}
-	lastcol = (ch - 1) - '0';
+	lastcol = ch - '1';
 
 	OCEAN(lastrow, lastcol) |= MARKBOMBED;
 
