@@ -62,6 +62,7 @@ void sendmessage(char, ...);
 void placeships(void);
 void cleanup(void);
 void setttystate(void);
+void draw(void);
 
 row_t lastrow;
 col_t lastcol;
@@ -71,10 +72,10 @@ int verbose;
 int ocean[NROWS][NCOLS];
 struct termios oldttystate, rawttystate;
 
-#define MARKBOMBED (1<<0)
-#define MARKSHIP   (1<<1)
-#define MARKRSHIP  (1<<2)
-#define MARKHIT    (1<<3)
+#define MARKBOMBED	(1 << 0)
+#define MARKRBOMBED	(1 << 1)
+#define MARKSHIP	(1 << 2)
+#define MARKRSHIP	(1 << 3)
 
 struct ship {
 	struct coord start;
@@ -206,6 +207,8 @@ main(int argc, char *argv[])
 
 	placeships();
 	sendready();
+	draw();
+	printf("Waiting for remote user to place ships...\n");
 	procexpected(MSGREADY);
 
 	/* "Server" peer goes first. */
@@ -237,7 +240,7 @@ draw(void)
 	for (i = 0; i < NROWS; i++) {
 		printf(" %c |", 'A' + i);
 		for (j = 0; j < NCOLS; j++) {
-			if (OCEAN(i, j) & MARKHIT) {
+			if (OCEAN(i, j) & MARKRBOMBED) {
 				if (OCEAN(i, j) & MARKSHIP)
 					printf(" X ");
 				else
@@ -400,21 +403,19 @@ placeships(void)
 						case 68: /* Left */
 							if (topleft.col == 0)
 								break;
-							for (jump = 1; jump < topleft.col; jump++) {
+							for (jump = 1; jump <= topleft.col; jump++) {
 								for (r = topleft.row; r <= botright.row; r++)
 									for (c = topleft.col; c <= botright.col; c++)
 										if (OCEAN(r, c - jump) & MARKSHIP) {
 								//			jump += c - topleft.col;
 											goto nextleft;
 										}
+								topleft.col  -= jump;
+								botright.col -= jump;
 								break;
 nextleft:
 								;
 							}
-							if (jump > topleft.col)
-								break;
-							topleft.col  -= jump;
-							botright.col -= jump;
 							break;
 						case 67: /* Right */
 							if (botright.col == NCOLS - 1)
@@ -424,31 +425,27 @@ nextleft:
 									for (c = topleft.col; c <= botright.col; c++)
 										if (OCEAN(r, c + jump) & MARKSHIP)
 											goto nextright;
+								topleft.col  += jump;
+								botright.col += jump;
 								break;
 nextright:
 								;
 							}
-							if (jump + botright.col >= NCOLS)
-								break;
-							topleft.col  += jump;
-							botright.col += jump;
 							break;
 						case 65: /* Up */
 							if (topleft.row == 0)
 								break;
-							for (jump = 1; jump < topleft.row; jump++) {
+							for (jump = 1; jump <= topleft.row; jump++) {
 								for (c = topleft.col; c <= botright.col; c++)
 									for (r = topleft.row; r <= botright.row; r++)
 										if (OCEAN(r - jump, c) & MARKSHIP)
 											goto nextup;
+								topleft.row  -= jump;
+								botright.row -= jump;
 								break;
 nextup:
 								;
 							}
-							if (jump > topleft.row)
-								break;
-							topleft.row  -= jump;
-							botright.row -= jump;
 							break;
 						case 66: /* Down */
 							if (botright.row == NROWS - 1)
@@ -458,14 +455,12 @@ nextup:
 									for (r = topleft.row; r <= botright.row; r++)
 										if (OCEAN(r + jump, c) & MARKSHIP)
 											goto nextdown;
+								topleft.row  += jump;
+								botright.row += jump;
 								break;
 nextdown:
 								;
 							}
-							if (jump + botright.row >= NROWS)
-								break;
-							topleft.row  += jump;
-							botright.row += jump;
 							break;
 						default:
 							/* putchar(); x 2 */
@@ -553,7 +548,7 @@ servsetup(char *hostname, in_port_t port)
 		err(1, "bind");
 	if (listen(sock, Q) == -1)
 		err(1, "listen");
-	if (accept(sock, (struct sockaddr *)&cliaddr, &clilen) == -1)
+	if ((sock = accept(sock, (struct sockaddr *)&cliaddr, &clilen)) == -1)
 		err(1, "accept");
 }
 
@@ -587,8 +582,7 @@ mainloop(void)
 void
 fullread(int fd, void *buf, size_t nbytes)
 {
-	size_t bytesread, chunksiz;
-printf("Waiting for %lu bytes\n", nbytes);
+	size_t bytesread = 0, chunksiz;
 	while (bytesread < nbytes) {
 		if ((chunksiz = read(fd, buf + bytesread, nbytes - bytesread)) == -1)
 			cleandie(("read"));
@@ -633,9 +627,11 @@ procexpected(char expected)
 			row = buf - 'a';
 
 			buf = msgbuf[1];
-			if (buf < '0' || buf > '9')
+			if (!isdigit(buf))
 				cleandiex(("Received bad message"));
 			col = buf - '0';
+
+			OCEAN(row, col) |= MARKRBOMBED;
 
 			break;
 		}
@@ -671,7 +667,7 @@ procexpected(char expected)
 			break;
 
 		case MSGSUNK:
-			
+
 			break;
 
 		default:
@@ -685,18 +681,18 @@ sendmessage(char type, ...)
 {
 	va_list ap;
 	char buf[MAXMSGLEN], *msg, stat;
-	row_t row;
-	col_t col;
 	hash_t hash;
 	int len;
 
 	va_start(ap, type);
 	switch (type) {
 	case MSGBOMB:
+#if 0
 		row = va_arg(ap, int);
 		col = va_arg(ap, int);
+#endif
 		snprintf(buf, sizeof(buf), "%c%c%c", type,
-			 row + 'A', col + '0');
+			 lastrow + 'A', lastcol + '0');
 		break;
 
 	case MSGREADY:
@@ -762,8 +758,6 @@ void
 sendbomb(void)
 {
 	int ch;
-	row_t row;
-	col_t col;
 
 	draw();
 	printf("Where would you like to send a bomb?\n");
@@ -772,34 +766,38 @@ sendbomb(void)
 		printf("Row: ");
 		fflush(stdout);
 		ch = tolower(getch());
-		getch(); /* newline */
+		if (ch != '\n')
+			getch(); /* newline */
 
 		if ('a' <= ch && ch <= ('a' + NROWS - 1))
 			break;
 		else
 			printf("Invalid row\n");
 	}
-	row = ch - 'a';
+	lastrow = ch - 'a';
 
 	for (;;) {
 		printf("Column: ");
 		fflush(stdout);
 		ch = getch();
-		getch();
+		if (ch != '\n')
+			getch();
 
-		if ('0' <= ch && ch <= ('0' + NCOLS -1))
+		if ('0' <= ch && ch <= ('0' + NCOLS - 1))
 			break;
 		else
 			printf("Invalid column\n");
 	}
-	col = ch - '0';
+	lastcol = ch - '0';
+
+	OCEAN(lastrow, lastcol) |= MARKBOMBED;
 
 #if 0
 	if (OCEAN(row, col) & MARKBOMBED)
 		start over;
 #endif
 
-	sendmessage(MSGBOMB, row, col);
+	sendmessage(MSGBOMB);
 }
 
 void
