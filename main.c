@@ -40,6 +40,7 @@
 
 #define   rawtty() tcsetattr(STDIN_FILENO, TCSANOW, &rawttystate)
 #define unrawtty() tcsetattr(STDIN_FILENO, TCSANOW, &oldttystate)
+#define ungetchar(a) ungetc(a, stdin)
 
 #define OCEAN(i, j) ocean[(int)(i)][(int)(j)]
 
@@ -68,7 +69,7 @@ row_t lastrow;
 col_t lastcol;
 hash_t peerhash;
 int sock;
-int verbose;
+int verbose = 1;
 int ocean[NROWS][NCOLS];
 struct termios oldttystate, rawttystate;
 
@@ -229,7 +230,7 @@ draw(void)
 	printf("\017");
 	fflush(stdout);
 #endif
-	printf("Your ships\n");
+	printf("Your ships/their bombs\n");
 	printf("    ");
 	for (j = 0; j < NCOLS; j++)
 		printf("%2d ", j + 1);
@@ -256,7 +257,7 @@ draw(void)
 	}
 	for (i = 0; i < 72; i++)
 		printf("-");
-	printf("\nTheir ships\n");
+	printf("\nTheir ships/your bombs\n");
 	printf("    ");
 	for (j = 0; j < NCOLS; j++)
 		printf("%2d ", j + 1);
@@ -463,12 +464,12 @@ nextdown:
 							}
 							break;
 						default:
-							/* putchar(); x 2 */
+							/* ungetchar(); x 2 */
 							break;
 						}
 						break;
 					default:
-						/* putchar(c); */
+						/* ungetchar(c); */
 						break;
 					}
 					break;
@@ -572,7 +573,9 @@ clisetup(char *hostname, in_port_t port)
 void
 mainloop(void)
 {
+debug("Entering main loop");
 	for (;;) {
+debug("Waiting for bomb");
 		procexpected(MSGBOMB);
 		draw();
 		sendbomb();
@@ -583,6 +586,9 @@ void
 fullread(int fd, void *buf, size_t nbytes)
 {
 	size_t bytesread = 0, chunksiz;
+
+debug("Trying to read %d bytes", nbytes);
+
 	while (bytesread < nbytes) {
 		if ((chunksiz = read(fd, buf + bytesread, nbytes - bytesread)) == -1)
 			cleandie(("read"));
@@ -598,9 +604,13 @@ procexpected(char expected)
 	row_t row;
 	col_t col;
 
+	debug("Expecting %c", expected);
+
 	fullread(sock, &buf, 1);
 
-	if (buf != expected) {
+	debug("Expected %c, received %c", expected, buf);
+
+	if (buf != expected && buf != MSGQUIT) {
 		sendmessage(MSGQUIT);
 		cleandiex(("received bad message (%c), quitting", buf));
 	}
@@ -637,7 +647,7 @@ procexpected(char expected)
 			hit = OCEAN(row, col) & MARKSHIP;
 
 			sendmessage(MSGSTAT, hit ? MSGSTATHIT : MSGSTATMISS,
-				    hit ? "Take that bitch" : "You will get it");
+				    hit ? "You hit me you bitch" : "You missed scumbag");
 
 			break;
 		}
@@ -652,9 +662,13 @@ procexpected(char expected)
 				cleandiex(("Received bad message"));
 			if (!isdigit(msgbuf[1]) || !isdigit(msgbuf[2]))
 				cleandiex(("Received bad message"));
-			len = msgbuf[1] * 10 + msgbuf[2];
+			len = (msgbuf[1] - '0') * 10 + (msgbuf[2] - '0');
 			if ((umsgbuf = malloc(len + 1)) == NULL)
 				cleandie(("malloc"));
+
+			debug("received status [hit: %c; len: %c%c -> %d]",
+				msgbuf[0], msgbuf[1], msgbuf[2], msgbuf[1], len);
+
 			fullread(sock, umsgbuf, len);
 			umsgbuf[len] = '\0';
 
@@ -662,7 +676,9 @@ procexpected(char expected)
 			if (msgbuf[0] == MSGSTATHIT)
 				OCEAN(lastrow, lastcol) |= MARKRSHIP;
 
-			printf("Received message from user: %s", umsgbuf);
+			draw();
+			printf("Received message from user: %s\n", umsgbuf);
+			printf("Waiting for remote user to bomb.\n");
 			break;
 		}
 
@@ -735,6 +751,8 @@ sendmessage(char type, ...)
 	}
 	va_end(ap);
 
+	debug("sending [%s]", buf);
+
 	write(sock, buf, strlen(buf));
 }
 
@@ -794,9 +812,9 @@ sendbomb(void)
 			if (ch == '1') {
 				nextch = getch();
 				if (nextch == '0')
-					ch++;
+					ch += 9;
 				else
-					putchar(ch);
+					ungetchar(ch);
 			}
 			while (getch() != '\n')
 				;
