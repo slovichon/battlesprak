@@ -13,6 +13,9 @@
 #define MSGQUIT		'q'
 #define MSGSUNK		'e'
 
+#define MSGSTATHIT	'h'
+#define MSGSTATMISS	'm'
+
 struct fsc_generic {
 	char type;
 	char buf[MAXMSGLEN];
@@ -40,8 +43,6 @@ struct fsc_quit {
 
 struct fsc_sunk {
 	char type;
-	int len:MAXUMSGNDIGITS;
-	char msg[MAXUMSGLEN];
 };
 
 #endif /* FSCBP_H */
