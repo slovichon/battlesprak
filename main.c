@@ -24,18 +24,18 @@
 #define NCOLS 10
 #define NROWS 10
 
-#define cleandie(a)			\
-	do {				\
-		cleanup();		\
-		warn a;			\
-		exit(1);		\
+#define cleandie(a)		\
+	do {			\
+		cleanup();	\
+		warn a;		\
+		exit(1);	\
 	} while (0)
 
-#define cleandiex(a)			\
-	do {				\
-		cleanup();		\
-		warnx a;		\
-		exit(1);		\
+#define cleandiex(a)		\
+	do {			\
+		cleanup();	\
+		warnx a;	\
+		exit(1);	\
 	} while (0)
 
 #define   rawtty() tcsetattr(STDIN_FILENO, TCSANOW, &rawttystate)
@@ -68,9 +68,7 @@ void draw(void);
 row_t lastrow;
 col_t lastcol;
 hash_t peerhash;
-int sock;
-int verbose = 1;
-int ocean[NROWS][NCOLS];
+int sock, verbose, ocean[NROWS][NCOLS];
 struct termios oldttystate, rawttystate;
 
 #define MARKBOMBED	(1 << 0)
@@ -158,9 +156,10 @@ main(int argc, char *argv[])
 			break;
 		case 'h':
 			usage(0);
-			/* FALLTHROUGH */
+			/* NOTREACHED */
 		case 'p':
-			if ((l = strtoul(optarg, NULL, 10)) < 0 || l > 65535)
+			if ((l = strtoul(optarg, NULL, 10)) > 65535 ||
+			    l == 0)
 				errx(1, "bad port");
 			port = l;
 			break;
@@ -192,7 +191,8 @@ main(int argc, char *argv[])
 		/* Parse port. */
 		if ((pos = strchr(argv[0], ':')) != NULL) {
 			*pos = '\0';
-			if ((l = strtoul(pos + 1, NULL, 10)) < 0 || l > 65535)
+			if ((l = strtoul(pos + 1, NULL, 10)) > 65535 ||
+			    l == 0)
 				errx(1, "bad port");
 			port = l;
 		}
@@ -364,12 +364,39 @@ nextrow:
 	cleandiex(("Can't locate legal starting position"));
 }
 
+int
+calcjump(int jump, int adj, int max, struct coord tl,
+	 struct coord br, int hdir)
+{
+	row_t r;
+	col_t c;
+
+	for (; abs(jump) <= max; jump += adj) {
+		for (r = tl.row; r <= br.row; r++)
+			for (c = tl.col; c <= br.col; c++)
+				if (OCEAN(hdir ? r : r + jump,
+					  hdir ? c + jump : c) & MARKSHIP) {
+					/* XXX: optimize */
+					/* jump += c - topleft.col; */
+					goto next;
+				}
+		/*
+		 * There are no conflicts with the new location,
+		 * so it is safe to jump there.
+		 */
+		return jump;
+next:
+		;
+	}
+
+	/* Couldn't be satisified; don't jump any. */
+	return 0;
+}
+
 void
 placeships(void)
 {
 	int i, ch, jump;
-	row_t r;
-	col_t c;
 	struct coord topleft, botright;
 
 	for (i = 0; i < NSHIPS; i++) {
@@ -385,97 +412,81 @@ placeships(void)
 			rawtty();
 			ch = getch();
 			switch (ch) {
-				case 3: /* ^C */
-					kill(getpid(), SIGINT);
-					break;
-				case 32: /* Space */
-					break;
-				case 13: /* Enter */
-					placeship(topleft, botright);
-					unrawtty();
-					goto placed;
+			case 3: /* ^C */
+				kill(getpid(), SIGINT);
+				break;
+				
+			case 32: /* Space */
+				break;
+				
+			case 13: /* Enter */
+				placeship(topleft, botright);
+				unrawtty();
+				goto placed;
+				/* NOTREACHED */
+
+			case 27: /* Esc */
+				ch = getch();
+				switch (ch) {
+				case 91:
+					goto procdir;
 					/* NOTREACHED */
-				case 27: /* Esc */
-					ch = getch();
-					switch (ch) {
-					case 91:
-						ch = getch();
-						switch (ch) {
-						case 68: /* Left */
-							if (topleft.col == 0)
-								break;
-							for (jump = 1; jump <= topleft.col; jump++) {
-								for (r = topleft.row; r <= botright.row; r++)
-									for (c = topleft.col; c <= botright.col; c++)
-										if (OCEAN(r, c - jump) & MARKSHIP) {
-								//			jump += c - topleft.col;
-											goto nextleft;
-										}
-								topleft.col  -= jump;
-								botright.col -= jump;
-								break;
-nextleft:
-								;
-							}
-							break;
-						case 67: /* Right */
-							if (botright.col == NCOLS - 1)
-								break;
-							for (jump = 1; jump + botright.col < NCOLS; jump++) {
-								for (r = topleft.row; r <= botright.row; r++)
-									for (c = topleft.col; c <= botright.col; c++)
-										if (OCEAN(r, c + jump) & MARKSHIP)
-											goto nextright;
-								topleft.col  += jump;
-								botright.col += jump;
-								break;
-nextright:
-								;
-							}
-							break;
-						case 65: /* Up */
-							if (topleft.row == 0)
-								break;
-							for (jump = 1; jump <= topleft.row; jump++) {
-								for (c = topleft.col; c <= botright.col; c++)
-									for (r = topleft.row; r <= botright.row; r++)
-										if (OCEAN(r - jump, c) & MARKSHIP)
-											goto nextup;
-								topleft.row  -= jump;
-								botright.row -= jump;
-								break;
-nextup:
-								;
-							}
-							break;
-						case 66: /* Down */
-							if (botright.row == NROWS - 1)
-								break;
-							for (jump = 1; jump + botright.row < NROWS; jump++) {
-								for (c = topleft.col; c <= botright.col; c++)
-									for (r = topleft.row; r <= botright.row; r++)
-										if (OCEAN(r + jump, c) & MARKSHIP)
-											goto nextdown;
-								topleft.row  += jump;
-								botright.row += jump;
-								break;
-nextdown:
-								;
-							}
-							break;
-						default:
-							/* ungetchar(); x 2 */
-							break;
-						}
-						break;
-					default:
-						/* ungetchar(c); */
-						break;
-					}
+				default:
+					/* ungetchar(c); */
 					break;
-				case EOF:
-					cleandiex((" "));
+				}
+				break;
 			}
+
+			goto nextch;
+procdir:
+			/* Next character processing. */
+			ch = getch();
+			switch (ch) {
+			case 68: /* Left */
+				if (topleft.col == 0)
+					break;
+				jump = calcjump(-1, -1, topleft.col,
+						topleft, botright, 1);
+				topleft.col  += jump;
+				botright.col += jump;
+				break;
+
+			case 67: /* Right */
+				if (botright.col == NCOLS - 1)
+					break;
+				jump = calcjump(1, 1,
+						NCOLS - botright.col - 1,
+						topleft, botright, 1);
+				topleft.col  += jump;
+				botright.col += jump;
+				break;
+
+			case 65: /* Up */
+				if (topleft.row == 0)
+					break;
+				jump = calcjump(-1, -1, topleft.row,
+						topleft, botright, 0);
+				topleft.row  += jump;
+				botright.row += jump;
+				break;
+				
+			case 66: /* Down */
+				if (botright.row == NROWS - 1)
+					break;
+				jump = calcjump(1, 1,
+						NROWS - botright.row - 1,
+						topleft, botright, 0);
+				topleft.row  += jump;
+				botright.row += jump;
+				break;
+
+			default:
+				/* ungetchar(); x 2 */
+				break;
+			}
+
+nextch:
 			unrawtty();
 		}
 placed:
@@ -520,8 +531,9 @@ parseaddr(char *hostname, in_port_t port, void *buf)
 		debug("String port: %s", sport);
 		if ((ecode = getaddrinfo(hostname, sport, &hints, &res)) != 0)
 			errx(1, "getaddrinfo: %s", gai_strerror(ecode));
-		//memcpy(addr, res->ai_addr, sizeof(*addr));
-		addr->sin_addr.s_addr = ((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr;
+		/* memcpy(addr, res->ai_addr, sizeof(*addr)); */
+		addr->sin_addr.s_addr = ((struct sockaddr_in *)res->
+						ai_addr)->sin_addr.s_addr;
 		freeaddrinfo(res);
 		break;
 	case  1:
@@ -583,17 +595,24 @@ debug("Waiting for bomb");
 }
 
 void
-fullread(int fd, void *buf, size_t nbytes)
+fullread(int fd, char *buf, size_t nbytes)
 {
 	size_t bytesread = 0, chunksiz;
 
 debug("Trying to read %d bytes", nbytes);
 
 	while (bytesread < nbytes) {
-		if ((chunksiz = read(fd, buf + bytesread, nbytes - bytesread)) == -1)
+		if ((chunksiz = read(fd, buf + bytesread,
+				     nbytes - bytesread)) == -1)
 			cleandie(("read"));
 		bytesread += chunksiz;
 	}
+}
+
+const char *
+getumsg(int hit)
+{
+	return hit ? "You hit me you scumbag" : "You missed scumbag";
 }
 
 void
@@ -647,8 +666,7 @@ procexpected(char expected)
 			OCEAN(row, col) |= MARKRBOMBED;
 			hit = OCEAN(row, col) & MARKSHIP;
 
-			sendmessage(MSGSTAT, hit ? MSGSTATHIT : MSGSTATMISS,
-				    hit ? "You hit me you bitch" : "You missed scumbag");
+			sendmessage(MSGSTAT, hit, getumsg(hit));
 
 			break;
 		}
@@ -668,7 +686,8 @@ procexpected(char expected)
 				cleandie(("malloc"));
 
 			debug("received status [hit: %c; len: %c%c -> %d]",
-				msgbuf[0], msgbuf[1], msgbuf[2], msgbuf[1], len);
+				msgbuf[0], msgbuf[1], msgbuf[2], msgbuf[1],
+				len);
 
 			fullread(sock, umsgbuf, len);
 			umsgbuf[len] = '\0';
@@ -690,6 +709,9 @@ procexpected(char expected)
 			break;
 
 		case MSGSUNK:
+			break;
+
+		case MSGEND:
 
 			break;
 
@@ -703,9 +725,7 @@ void
 sendmessage(char type, ...)
 {
 	va_list ap;
-	char buf[MAXMSGLEN], *msg, stat;
-	hash_t hash;
-	int len;
+	char buf[MAXMSGLEN];
 
 	va_start(ap, type);
 	switch (type) {
@@ -718,15 +738,23 @@ sendmessage(char type, ...)
 			 lastrow + 'A', lastcol + 1);
 		break;
 
-	case MSGREADY:
-		snprintf(buf, sizeof(buf), "%c", type);
-		break;
+	case MSGREADY: {
+#ifdef HASH
+		hash_t hash;
+
 		hash = va_arg(ap, int);
 		snprintf(buf, sizeof(buf), "%c%0*d", type,
 			 1 + (int)log10(USHRT_MAX), hash);
+#else
+		snprintf(buf, sizeof(buf), "%c", type);
+#endif
 		break;
+	}
 
-	case MSGSTAT:
+	case MSGSTAT: {
+		char stat, *msg;
+		int len;
+
 		stat = va_arg(ap, int);
 		msg = va_arg(ap, char *);
 		if ((len = strlen(msg)) > MAXUMSGLEN)
@@ -734,21 +762,43 @@ sendmessage(char type, ...)
 		snprintf(buf, sizeof(buf), "%c%c%0*d%.*s", type, stat,
 			 MAXUMSGNDIGITS, len, MAXUMSGLEN, msg);
 		break;
+	}
 
 	case MSGQUIT:
 		snprintf(buf, sizeof(buf), "%c", type);
 		break;
 
-	case MSGSUNK:
-		snprintf(buf, sizeof(buf), "%c", type);
-#if 0
+	case MSGSUNK: {
+		char *msg;
+		int len;
+
 		msg = va_arg(ap, char *);
 		if ((len = strlen(msg)) > MAXUMSGLEN)
 			len = MAXUMSGLEN;
 		snprintf(buf, sizeof(buf), "%c%0*d%.*s", type,
 			 MAXUMSGNDIGITS, len, MAXUMSGLEN, msg);
+		break;
+	}
+
+	case MSGEND: {
+#ifdef HASH
+		int i, j;
+		char coord[4]; /* row, 2-digit col, NUL */
+
+		for (i = 0; i < NROWS; i++)
+			for (j = 0; j < NCOLS; j++)
+				if (OCEAN(i, j) & MARKSHIP) {
+					snprintf(coord, sizeof(coord),
+						 "%c%02d", i + 'A', j + '1');
+					if (strlcat(buf, coord, sizeof(buf)) <
+					    strlen(coord))
+						cleandiex(("can't copy coordinates"));
+				}
+#else
+		snprintf(buf, sizeof(buf), "%c", type);
 #endif
 		break;
+	}
 	}
 	va_end(ap);
 
@@ -758,24 +808,61 @@ sendmessage(char type, ...)
 }
 
 hash_t
-calchash(struct coord **vec)
+calchash(struct coord *p, size_t n)
 {
 	hash_t val;
-	struct coord **p;
 
-	for (p = vec; *p != NULL; p++)
-		val = val * 100 + (*p)->row * 10 + (*p)->col;
+	for (; --n; p++)
+		val = (val * 100 + p->row * 10 + p->col) % USHRT_MAX;
 
 	return val;
+}
+
+int
+coordcmp(const void *x, const void *y)
+{
+	struct coord *a, *b;
+
+	a = (struct coord *)x;
+	b = (struct coord *)y;
+
+	if (a->row == b->row) {
+		if (a->col == b->col)
+			return 0;
+		else
+			return a->col < b->col ? -1 : 1;
+	} else
+		return a->row < b->row ? -1 : 1;
 }
 
 void
 sendready(void)
 {
 	hash_t h;
-#if 0
-	h = calchash();
-#endif
+	struct coord *coords, *cp;
+	int ncoords = 0, i, j;
+
+	for (i = 0; i < NSHIPS; i++)
+		ncoords += ships[i].len;
+
+	if ((coords = malloc(sizeof(struct coord) * ncoords)) == NULL)
+		cleandie(("malloc"));
+
+	cp = coords;
+	for (i = 0; i < NROWS; i++)
+		for (j = 0; j < NCOLS; j++)
+			if (OCEAN(i, j) & MARKSHIP) {
+				cp->row = i;
+				cp->col = j;
+				if (++cp - coords > ncoords)
+					goto skipships;
+			}
+skipships:
+
+	qsort(coords, cp - coords, sizeof(struct coord), coordcmp);
+	h = calchash(coords, cp - coords);
+	debug("%hu", h);
+	sleep(2);
 	sendmessage(MSGREADY, h);
 }
 
@@ -799,8 +886,9 @@ sendbomb(void)
 		}
 
 		printf("Invalid row\n");
-		while (getch() != '\n')
-			;
+		if (ch != '\n')
+			while (getch() != '\n')
+				;
 	}
 	lastrow = ch - 'a';
 
@@ -823,8 +911,9 @@ sendbomb(void)
 		}
 
 		printf("Invalid column\n");
-		while (getch() != '\n')
-			;
+		if (ch != '\n')
+			while (getch() != '\n')
+				;
 	}
 	lastcol = ch - '1';
 
