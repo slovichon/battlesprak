@@ -5,6 +5,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <termios.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +19,28 @@
 
 #define PORT 6986
 #define Q 1
+#define NSHIPS 5
+#define NCOLS 10
+#define NROWS 10
+
+#define cleandie(a)			\
+	do {				\
+		cleanup();		\
+		warn a;			\
+		exit(1);		\
+	} while (0)
+
+#define cleandiex(a)			\
+	do {				\
+		cleanup();		\
+		warnx a;		\
+		exit(1);		\
+	} while (0)
+
+#define   rawtty() tcsetattr(STDIN_FILENO, TCSANOW, &rawttystate)
+#define unrawtty() tcsetattr(STDIN_FILENO, TCSANOW, &oldttystate)
+
+#define OCEAN(i, j) ocean[(int)(i)][(int)(j)]
 
 typedef char row_t;
 typedef char col_t;
@@ -33,10 +57,31 @@ void sendbomb(void);
 void mainloop(void);
 void procexpected(char);
 void sendmessage(char, ...);
+void placeships(void);
+void cleanup(void);
+void setttystate(void);
 
 hash_t peerhash;
 int sock;
 int verbose;
+int ocean[NROWS][NCOLS];
+struct termios oldttystate, rawttystate;
+
+#define MARKBOMBED (1<<0)
+#define MARKSHIP   (1<<1)
+
+struct ship {
+	struct coord start;
+	struct coord end;
+	int len;
+	char *name;
+} ships[NSHIPS] = {
+	{{-1,-1}, {-1,-1}, 5, "Battlecruiser"},
+	{{-1,-1}, {-1,-1}, 4, "Destroyer"},
+	{{-1,-1}, {-1,-1}, 3, "Mayflower"},
+	{{-1,-1}, {-1,-1}, 3, "Santa Marie"},
+	{{-1,-1}, {-1,-1}, 2, "Voyager"},
+};
 
 void
 debug(char *fmt, ...)
@@ -63,6 +108,16 @@ usage(int status)
 	exit(status);
 }
 
+void sighandler(int sig)
+{
+	switch (sig) {
+	case SIGINT:
+		cleanup();
+		exit(1);
+		break;
+	}
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -72,6 +127,12 @@ main(int argc, char *argv[])
 	unsigned long l;
 	extern char *optarg;
 	extern int optind;
+
+	tcgetattr(STDIN_FILENO, &oldttystate);
+	memcpy(&rawttystate, &oldttystate, sizeof(rawttystate));
+	cfmakeraw(&rawttystate);
+
+	signal(SIGINT, sighandler);
 
 	while ((ch = getopt(argc, argv, "dhp:v")) != -1) {
 		switch (ch) {
@@ -123,14 +184,172 @@ main(int argc, char *argv[])
 
 	if (daemon) {
 		servsetup(hostname, port);
-		sendbomb();
 	} else
 		clisetup(hostname, port);
 
 	debug("Starting main loop");
+
+	placeships();
+
+	/* "Server" peer goes first. */
+	if (daemon)
+		sendbomb();
 	mainloop();
 
 	return 0;
+}
+
+void draw(void)
+{
+	int i, j;
+
+	system("clear");
+#if 0
+	printf("\017");
+	fflush(stdout);
+#endif
+	printf("    ");
+	for (j = 0; j < NCOLS; j++)
+		printf("%2d ", j + 1);
+	printf("\n   +");
+	for (j = 0; j < NCOLS*3; j++)
+		printf("-");
+	printf("\n");
+	for (i = 0; i < NROWS; i++) {
+		printf(" %c |", 'A' + i);
+		for (j = 0; j < NCOLS; j++) {
+			if (OCEAN(i, j) & MARKBOMBED) {
+				if (OCEAN(i, j) & MARKSHIP)
+					printf(" X ");
+				else
+					printf(" o ");
+			} else {
+				if (OCEAN(i, j) & MARKSHIP)
+					printf(" # ");
+				else
+					printf("   ");
+			}
+		}
+		printf("\n");
+	}
+}
+
+void
+placeship(struct coord topleft, struct coord botright)
+{
+	int i;
+	if (topleft.row == botright.row)
+		for (i = topleft.col; i <= botright.col; i++)
+			OCEAN(topleft.row, i) |= MARKSHIP;
+	else
+		for (i = topleft.row; i <= botright.row; i++)
+			OCEAN(i, topleft.col) |= MARKSHIP;
+}
+
+void
+unplaceship(struct coord topleft, struct coord botright)
+{
+	int i;
+	if (topleft.row == botright.row)
+		for (i = topleft.col; i <= botright.col; i++)
+			OCEAN(topleft.row, i) &= ~MARKSHIP;
+	else
+		for (i = topleft.row; i <= botright.row; i++)
+			OCEAN(i, topleft.col) &= ~MARKSHIP;
+}
+
+void
+placeships(void)
+{
+	int i, c;
+	struct coord topleft, botright;
+
+	for (i = 0; i < NSHIPS; i++) {
+		topleft.row = 0;
+		topleft.col = 0;
+		botright.row = 0;
+		botright.col = ships[i].len - 1;
+
+		for (;;) {
+			placeship(topleft, botright);
+			draw();
+			unplaceship(topleft, botright);
+
+			printf("Where will the %s go?\n", ships[i].name);
+			rawtty();
+			c = getchar();
+			switch (c) {
+				case 3: /* ^C */
+					kill(getpid(), SIGINT);
+					break;
+				case 32: /* Space */
+					break;
+				case 13: /* Enter */
+					placeship(topleft, botright);
+					unrawtty();
+					goto placed;
+					/* NOTREACHED */
+				case 27: /* Esc */
+					c = getchar();
+					switch (c) {
+					case 91:
+						c = getchar();
+						switch (c) {
+						case 68: /* Left */
+							if (topleft.col == 0)
+								goto bounded;
+							for (c = topleft.row; c <= botright.row; c++)
+								if (OCEAN(c, topleft.col - 1) & MARKSHIP)
+									goto bounded;
+							topleft.col--;
+							botright.col--;
+							break;
+						case 67: /* Right */
+							if (botright.col == NCOLS - 1)
+								goto bounded;
+							for (c = topleft.row; c <= botright.row; c++)
+								if (OCEAN(c, botright.col + 1) & MARKSHIP)
+									goto bounded;
+							topleft.col++;
+							botright.col++;
+							break;
+						case 65: /* Up */
+							if (topleft.row == 0)
+								goto bounded;
+							for (c = topleft.col; c <= botright.col; c++)
+								if (OCEAN(topleft.row - 1, c) & MARKSHIP)
+									goto bounded;
+							topleft.row--;
+							botright.row--;
+							break;
+						case 66: /* Down */
+							if (botright.row == NROWS - 1)
+								goto bounded;
+							for (c = topleft.col; c <= botright.col; c++)
+								if (OCEAN(botright.row + 1, c) & MARKSHIP)
+									goto bounded;
+							topleft.row++;
+							botright.row++;
+							break;
+						default:
+							/* putchar(); x 2 */
+							break;
+						}
+bounded:
+						break;
+					default:
+						/* putchar(c); */
+						break;
+					}
+					break;
+				case EOF:
+					cleandiex((" "));
+			}
+			unrawtty();
+		}
+placed:
+		;
+	}
 }
 
 void
@@ -139,7 +358,7 @@ parseaddr(char *hostname, in_port_t port, void *buf)
 	struct addrinfo hints, *res;
 	struct sockaddr_in *addr = (struct sockaddr_in *)buf;
 	size_t len;
-	char *sport, ip[BUFSIZ];
+	char *sport;
 	int ecode;
 
 	memset(addr, 0, sizeof(*addr));
@@ -161,7 +380,7 @@ parseaddr(char *hostname, in_port_t port, void *buf)
 	case  0:
 		debug("Attempting to resolve hostname");
 		memset(&hints, 0, sizeof(hints));
-		hints.ai_family = PF_INET;
+		hints.ai_family = AF_INET;
 		hints.ai_socktype = SOCK_STREAM;
 		len = 2 + (int)log10(port);
 		if ((sport = malloc(len)) == NULL)
@@ -191,8 +410,7 @@ servsetup(char *hostname, in_port_t port)
 	parseaddr(hostname, port, &servaddr);
 
 	inet_ntop(AF_INET, &servaddr.sin_addr, ip, sizeof ip);
-	debug("Listening on (%d)%s:%u", servaddr.sin_family, ip,
-	      ntohs(servaddr.sin_port));
+	debug("Listening on %s:%u", ip, ntohs(servaddr.sin_port));
 
 	if ((sock = socket(PF_INET, SOCK_STREAM, 0)) == -1)
 		err(1, "socket");
@@ -230,20 +448,6 @@ mainloop(void)
 	}
 }
 
-#define cleandie(a)			\
-	do {				\
-		sendmessage(MSGQUIT);	\
-		warn a;			\
-		exit(1);		\
-	} while (0)
-
-#define cleandiex(a)			\
-	do {				\
-		sendmessage(MSGQUIT);	\
-		warnx a;		\
-		exit(1);		\
-	} while (0)
-
 void
 fullread(int fd, void *buf, size_t nbytes)
 {
@@ -266,7 +470,7 @@ procexpected(char expected)
 
 	if (buf != expected) {
 		sendmessage(MSGQUIT);
-		errx(1, "received bad message (%c), quitting", buf);
+		cleandiex(("received bad message (%c), quitting", buf));
 	}
 
 	switch (buf) {
@@ -362,3 +566,12 @@ sendbomb(void)
 
 	sendmessage(MSGBOMB, row, col);
 }
+
+void
+cleanup(void)
+{
+	if (sock)
+		sendmessage(MSGQUIT);
+	unrawtty();
+}
+
